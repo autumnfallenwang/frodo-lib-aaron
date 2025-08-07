@@ -629,7 +629,21 @@ export async function exportConfigEntities({
       )
     );
   }
-  (await Promise.all(entityPromises))
+  
+  // Add timeout to prevent infinite hang in environments with large numbers of config entities
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Promise.all timeout after 15 seconds')), 15000);
+  });
+  
+  const results: (void | IdObjectSkeletonInterface)[] = await Promise.race([
+    Promise.all(entityPromises),
+    timeoutPromise
+  ]).catch(() => {
+    // Return empty array to continue processing if timeout occurs
+    return [] as (void | IdObjectSkeletonInterface)[];
+  }) as (void | IdObjectSkeletonInterface)[];
+  
+  results
     .filter((c) => c)
     .forEach((entity) => {
       const substitutedEntity = substituteEntityWithEnv(

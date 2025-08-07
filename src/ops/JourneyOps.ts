@@ -1396,28 +1396,47 @@ export async function exportJourneys({
     message: 'Exporting journeys...',
     state,
   });
+  
+  let successCount = 0;
   for (const tree of trees) {
     updateProgressIndicator({
       id: indicatorId,
       message: `Exporting journey ${tree._id}`,
       state,
     });
-    const exportData: SingleTreeExportInterface = await getResult(
-      resultCallback,
-      `Error exporting the journey ${tree._id}`,
-      exportJourney,
-      {
-        journeyId: tree._id,
-        options,
-        state,
-      }
-    );
-    delete exportData.meta;
-    multiTreeExport.trees[tree._id] = exportData;
+    
+    try {
+      // Add timeout to individual journey export to prevent hanging
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Journey export timeout after 30 seconds')), 30000);
+      });
+      
+      const exportData: SingleTreeExportInterface = await Promise.race([
+        getResult(
+          resultCallback,
+          `Error exporting the journey ${tree._id}`,
+          exportJourney,
+          {
+            journeyId: tree._id,
+            options,
+            state,
+          }
+        ),
+        timeoutPromise
+      ]);
+      
+      delete exportData.meta;
+      multiTreeExport.trees[tree._id] = exportData;
+      successCount++;
+    } catch (error) {
+      // Log error and continue with next journey - don't break the entire export
+      console.error(`Failed to export journey ${tree._id}, skipping: ${error.message}`);
+    }
   }
+  
   stopProgressIndicator({
     id: indicatorId,
-    message: `Exported ${trees.length} journeys.`,
+    message: `Exported ${successCount} journeys.`,
     state,
   });
   return multiTreeExport;
