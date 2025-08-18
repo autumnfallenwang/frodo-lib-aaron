@@ -590,75 +590,76 @@ export async function exportConfigEntities({
     message: 'Exporting config entities...',
     state,
   });
-  const entityPromises: Promise<void | IdObjectSkeletonInterface>[] = [];
-  for (const configEntity of configurations) {
+  
+  // Process each entity individually to prevent one timeout from failing the entire export
+  let successCount = 0;
+  for (let i = 0; i < configurations.length; i++) {
+    const configEntity = configurations[i];
     updateProgressIndicator({
       id: indicatorId,
       message: `Exporting config entity ${configEntity._id}`,
       state,
     });
-    entityPromises.push(
-      getResult(
-        getErrorCallback(
-          resultCallback,
-          (error) =>
-            !(
-              // operation is not available in PingOne Advanced Identity Cloud
-              (
-                error.httpStatus === 403 &&
+    
+    try {
+      // Add timeout to individual entity export to prevent hanging
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('IDM config export timeout after 15 seconds')), 15000);
+      });
+      
+      const entity: IdObjectSkeletonInterface = await Promise.race([
+        getResult(
+          getErrorCallback(
+            resultCallback,
+            (error) =>
+              !(
+                // operation is not available in PingOne Advanced Identity Cloud
+                (
+                  error.httpStatus === 403 &&
+                  error.httpMessage ===
+                    'This operation is not available in PingOne Advanced Identity Cloud.'
+                )
+              ) &&
+              // list of config entities, which do not exist by default or ever.
+              !(
+                IDM_UNAVAILABLE_ENTITIES.includes(configEntity._id) &&
+                error.httpStatus === 404 &&
+                error.httpErrorReason === 'Not Found'
+              ) &&
+              // https://bugster.forgerock.org/jira/browse/OPENIDM-18270
+              !(
+                error.httpStatus === 404 &&
                 error.httpMessage ===
-                  'This operation is not available in PingOne Advanced Identity Cloud.'
+                  'No configuration exists for id org.apache.felix.fileinstall/openidm'
               )
-            ) &&
-            // list of config entities, which do not exist by default or ever.
-            !(
-              IDM_UNAVAILABLE_ENTITIES.includes(configEntity._id) &&
-              error.httpStatus === 404 &&
-              error.httpErrorReason === 'Not Found'
-            ) &&
-            // https://bugster.forgerock.org/jira/browse/OPENIDM-18270
-            !(
-              error.httpStatus === 404 &&
-              error.httpMessage ===
-                'No configuration exists for id org.apache.felix.fileinstall/openidm'
-            )
+          ),
+          `Error exporting idm config entity ${configEntity._id}`,
+          readConfigEntity,
+          { entityId: configEntity._id, state }
         ),
-        `Error exporting idm config entity ${configEntity._id}`,
-        readConfigEntity,
-        { entityId: configEntity._id, state }
-      )
-    );
+        timeoutPromise
+      ]);
+      
+      if (entity) {
+        const substitutedEntity = substituteEntityWithEnv(
+          entity,
+          options.envReplaceParams
+        );
+        exportData.idm[entity._id] = substitutedEntity;
+        if (resultCallback) {
+          resultCallback(undefined, substitutedEntity);
+        }
+        successCount++;
+      }
+    } catch (error) {
+      // Log error and continue with next entity - don't break the entire export
+      console.error(`Failed to export IDM config entity ${configEntity._id}, skipping: ${error.message}`);
+    }
   }
   
-  // Add timeout to prevent infinite hang in environments with large numbers of config entities
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Promise.all timeout after 15 seconds')), 15000);
-  });
-  
-  const results: (void | IdObjectSkeletonInterface)[] = await Promise.race([
-    Promise.all(entityPromises),
-    timeoutPromise
-  ]).catch(() => {
-    // Return empty array to continue processing if timeout occurs
-    return [] as (void | IdObjectSkeletonInterface)[];
-  }) as (void | IdObjectSkeletonInterface)[];
-  
-  results
-    .filter((c) => c)
-    .forEach((entity) => {
-      const substitutedEntity = substituteEntityWithEnv(
-        entity as IdObjectSkeletonInterface,
-        options.envReplaceParams
-      );
-      exportData.idm[(entity as IdObjectSkeletonInterface)._id] =
-        substitutedEntity;
-      if (resultCallback) {
-        resultCallback(undefined, substitutedEntity);
-      }
-    });
   stopProgressIndicator({
     id: indicatorId,
-    message: `Exported ${configurations.length} config entities.`,
+    message: `Exported ${successCount} config entities.`,
     status: 'success',
     state,
   });
